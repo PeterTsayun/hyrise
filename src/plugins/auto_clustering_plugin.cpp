@@ -1,13 +1,24 @@
+
 #include "auto_clustering_plugin.hpp"
-#include "storage/table.hpp"
-
-
 #include "sql/sql_pipeline_builder.hpp"
 
+#include "operators/get_table.hpp"
+#include "operators/sort.hpp"
+#include "operators/table_wrapper.hpp"
+#include "operators/update.hpp"
+#include "operators/validate.hpp"
+#include "storage/base_segment.hpp"
+#include "storage/chunk_encoder.hpp"
+#include "storage/reference_segment.hpp"
+#include "storage/segment_encoding_utils.hpp"
+#include "storage/table.hpp"
+#include "statistics/table_statistics.hpp"
+#include "statistics/generate_pruning_statistics.hpp"
+#include "resolve_type.hpp"
+#include "storage/reference_segment.hpp"
+#include "storage/segment_encoding_utils.hpp"
 
 namespace opossum {
-
-const std::string AutoClusteringPlugin::description() const { return "AutoClustering"; }
 
 std::map<std::string, std::map<std::string, int64_t>> get_access_data(){
   std::string sql = "SELECT table_name, column_name, "
@@ -70,38 +81,88 @@ std::map<std::string, std::string> get_most_accessed_columns(std::map<std::strin
   return most_accessed;
 }
 
-void print_access_data(std::map<std::string, std::map<std::string, int64_t>> access_data){
-  for (auto it=access_data.begin(); it!=access_data.end(); ++it){
-    std::cout << "Table: " << it->first << '\n';
-    for (auto it2=it->second.begin(); it2!=it->second.end(); ++it2){
-        std::cout << "   " << it2->first << " : " << it2->second << '\n';
-    }
-  }
-}
-
-void print_most_accessed_columns(std::map<std::string, std::string> most_accessed_columns){
-  for (auto it=most_accessed_columns.begin(); it!=most_accessed_columns.end(); ++it){
-    std::cout << it->first << " : " << it->second << '\n';
-  }
-}
+const std::string AutoClusteringPlugin::description() const { return "AutoClusteringPlugin"; }
 
 void AutoClusteringPlugin::start() {
-  TableColumnDefinitions column_definitions;
-  column_definitions.emplace_back("col_1", DataType::Int, false);
-  auto table = std::make_shared<Table>(column_definitions, TableType::Data);
-  storage_manager.add_table("DummyTable", table);
+  Hyrise::get().log_manager.add_message(description(), "Initialized!", LogLevel::Info);
+  _loop_thread = std::make_unique<PausableLoopThread>(THREAD_INTERVAL, [&](size_t) { _optimize_clustering(); });
+}
+
+void AutoClusteringPlugin::_optimize_clustering() {
+  if (_optimized) return;
+
+  _optimized = true;
 
   auto access_data = get_access_data();
-  print_access_data(access_data);
-  std::cout << '\n';
-  auto most_accessed_columns = get_most_accessed_columns(access_data);
-  print_most_accessed_columns(most_accessed_columns);
+  // std::map<std::string, std::string> sort_orders = {{"orders_tpch_0_1", "o_orderdate"}, {"orders_tpch_1", "o_orderdate"}, {"lineitem_tpch_0_1", "l_shipdate"}, {"lineitem_tpch_1", "l_shipdate"}};
+  std::map<std::string, std::string> sort_orders = get_most_accessed_columns(access_data);
+
+  for (auto& [table_name, column_name] : sort_orders) {
+    std::cout << "Working with table: " << table_name << " column: " << column_name << '\n';
+    if (!Hyrise::get().storage_manager.has_table(table_name)) {
+      Hyrise::get().log_manager.add_message(description(), "No optimization possible with given parameters for " + table_name + " table!", LogLevel::Debug);
+      continue;
+    }
+    auto table = Hyrise::get().storage_manager.get_table(table_name);
+
+    const auto sort_column_id = table->column_id_by_name(column_name);
+
+    auto table_wrapper = std::make_shared<TableWrapper>(table);
+    table_wrapper->execute();
+    auto sort = Sort{table_wrapper, {SortColumnDefinition{sort_column_id, OrderByMode::Ascending}}, Chunk::DEFAULT_SIZE, Sort::ForceMaterialization::Yes};
+    sort.execute();
+    const auto immutable_sorted_table = sort.get_output();
+
+    Assert(immutable_sorted_table->chunk_count() == table->chunk_count(), "Mismatching chunk_count");
+
+    table = std::make_shared<Table>(immutable_sorted_table->column_definitions(), TableType::Data,
+                                    table->target_chunk_size(), UseMvcc::Yes);
+    const auto column_count = immutable_sorted_table->column_count();
+    const auto chunk_count = immutable_sorted_table->chunk_count();
+    for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
+      const auto chunk = immutable_sorted_table->get_chunk(chunk_id);
+      auto mvcc_data = std::make_shared<MvccData>(chunk->size(), CommitID{0});
+      Segments segments{};
+      for (auto column_id = ColumnID{0}; column_id < column_count; ++column_id) {
+        const auto base_segment = chunk->get_segment(column_id);
+        std::shared_ptr<BaseSegment> new_segment;
+        const auto data_type = table->column_data_type(column_id);
+        new_segment = ChunkEncoder::encode_segment(base_segment, data_type, SegmentEncodingSpec{EncodingType::Dictionary});
+        segments.emplace_back(new_segment);
+      }
+      table->append_chunk(segments, mvcc_data);
+      table->get_chunk(chunk_id)->set_ordered_by({sort_column_id,  OrderByMode::Ascending});
+      table->get_chunk(chunk_id)->finalize();
+    }
+
+    // for (ChunkID chunk_id = ChunkID{0}; chunk_id < table->chunk_count(); ++chunk_id) {
+    //   auto chunk = table->get_chunk(chunk_id);
+    //   for (ColumnID column_)
+    // const auto base_segment = chunk->get_segment(column_id);
+    // memory_usage_old += base_segment->memory_usage(MemoryUsageCalculationMode::Sampled);
+
+    // std::shared_ptr<BaseSegment> new_segment;
+    // new_segment = encode_and_compress_segment(base_segment, data_type, SegmentEncodingSpec{EncodingType::LZ4});
+    // memory_usage_new += new_segment->memory_usage(MemoryUsageCalculationMode::Sampled);
+
+    // chunk->replace_segment(column_id, new_segment);
+    // }
+
+    table->set_table_statistics(TableStatistics::from_table(*table));
+    generate_chunk_pruning_statistics(table);
+
+    Hyrise::get().storage_manager.replace_table(table_name, table);
+    if (Hyrise::get().default_lqp_cache)
+      Hyrise::get().default_lqp_cache->clear();
+    if (Hyrise::get().default_pqp_cache)
+      Hyrise::get().default_pqp_cache->clear();
+
+    Hyrise::get().log_manager.add_message(description(), "Applied new clustering configuration (" + column_name + ") to " + table_name + " table.", LogLevel::Warning);
+  }
 }
 
-void AutoClusteringPlugin::stop() {
-   Hyrise::get().storage_manager.drop_table("DummyTable");
-  std::cout << "You killed me!\n";
-}
+void AutoClusteringPlugin::stop() {}
+
 
 EXPORT_PLUGIN(AutoClusteringPlugin)
 
