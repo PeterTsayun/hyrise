@@ -15,7 +15,7 @@
 
 namespace opossum {
 
-class AutoClusteringPlugin : public AbstractPlugin {
+class AccessClusteringPlugin : public AbstractPlugin {
  public:
   const std::string description() const final;
 

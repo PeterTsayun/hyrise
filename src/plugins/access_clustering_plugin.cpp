@@ -1,5 +1,5 @@
 
-#include "auto_clustering_plugin.hpp"
+#include "access_clustering_plugin.hpp"
 #include "sql/sql_pipeline_builder.hpp"
 
 #include "operators/get_table.hpp"
@@ -81,14 +81,14 @@ std::map<std::string, std::string> get_most_accessed_columns(std::map<std::strin
   return most_accessed;
 }
 
-const std::string AutoClusteringPlugin::description() const { return "AutoClusteringPlugin"; }
+const std::string AccessClusteringPlugin::description() const { return "AutoClusteringPlugin"; }
 
-void AutoClusteringPlugin::start() {
+void AccessClusteringPlugin::start() {
   Hyrise::get().log_manager.add_message(description(), "Initialized!", LogLevel::Info);
   _loop_thread = std::make_unique<PausableLoopThread>(THREAD_INTERVAL, [&](size_t) { _optimize_clustering(); });
 }
 
-void AutoClusteringPlugin::_optimize_clustering() {
+void AccessClusteringPlugin::_optimize_clustering() {
   if (_optimized) return;
 
   _optimized = true;
@@ -161,9 +161,9 @@ void AutoClusteringPlugin::_optimize_clustering() {
   }
 }
 
-void AutoClusteringPlugin::stop() {}
+void AccessClusteringPlugin::stop() {}
 
 
-EXPORT_PLUGIN(AutoClusteringPlugin)
+EXPORT_PLUGIN(AccessClusteringPlugin)
 
 }  // namespace opossum

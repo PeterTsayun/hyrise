@@ -35,7 +35,7 @@ add_plugin(NAME MvccDeletePlugin SRCS mvcc_delete_plugin.cpp mvcc_delete_plugin.
 add_plugin(NAME hyriseTestPlugin SRCS test_plugin.cpp test_plugin.hpp)
 add_plugin(NAME hyriseTestNonInstantiablePlugin SRCS non_instantiable_plugin.cpp)
 
-add_plugin(NAME AutoClusteringPlugin SRCS auto_clustering_plugin.cpp auto_clustering_plugin.hpp)
+add_plugin(NAME AccessClusteringPlugin SRCS access_clustering_plugin.cpp access_clustering_plugin.hpp)
 
 
 # We define TEST_PLUGIN_DIR to always load plugins from the correct directory for testing purposes
