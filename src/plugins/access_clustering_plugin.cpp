@@ -81,7 +81,7 @@ std::map<std::string, std::string> get_most_accessed_columns(std::map<std::strin
   return most_accessed;
 }
 
-const std::string AccessClusteringPlugin::description() const { return "AutoClusteringPlugin"; }
+const std::string AccessClusteringPlugin::description() const { return "AccessClusteringPlugin"; }
 
 void AccessClusteringPlugin::start() {
   Hyrise::get().log_manager.add_message(description(), "Initialized!", LogLevel::Info);
