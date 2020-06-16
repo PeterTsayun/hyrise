@@ -24,7 +24,7 @@ class ReactiveClusteringPlugin : public AbstractPlugin {
   void stop() final;
 
  private:
-  constexpr static std::chrono::milliseconds THREAD_INTERVAL = std::chrono::milliseconds(1'000);
+  constexpr static std::chrono::milliseconds THREAD_INTERVAL = std::chrono::milliseconds(15'000);
 
   std::unique_ptr<PausableLoopThread> _loop_thread;
 

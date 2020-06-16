@@ -52,6 +52,51 @@ std::map<std::string, std::map<std::string, int64_t>> get_access_data(){
   return access_data;
 }
 
+std::map<std::string, std::map<std::string, int64_t>> calculate_access_data_difference(
+  std::map<std::string, std::map<std::string, int64_t>> base,
+  std::map<std::string, std::map<std::string, int64_t>> subtractor
+)
+  {
+    std::map<std::string, std::map<std::string, int64_t>> res;
+    for (auto table_iterator=base.begin(); table_iterator!=base.end(); ++table_iterator){
+      auto table_name = table_iterator->first;
+      auto it_1 = subtractor.find(table_name);
+
+      if (it_1 != subtractor.end()){
+        res.insert({table_name, std::map<std::string, int64_t>()});
+        for (auto column_iterator=table_iterator->second.begin(); column_iterator!=table_iterator->second.end(); ++column_iterator){
+          auto column_name = column_iterator->first;
+
+          auto it_2 = subtractor[table_name].find(column_name);
+          if (it_2 != subtractor[table_name].end()){
+            res[table_name][column_name] = base[table_name][column_name] - subtractor[table_name][column_name];
+          }else{
+            res[table_name][column_name] = base[table_name][column_name];
+          }
+        }
+      }else{
+          res[table_name] = base[table_name];
+      }
+    }
+    return res;
+}
+
+std::map<std::string, std::map<std::string, int64_t>> get_current_access_data(){
+  static std::map<std::string, std::map<std::string, int64_t>> last_access_data;
+
+  if (last_access_data.empty()){
+    last_access_data = get_access_data();
+    return std::map<std::string, std::map<std::string, int64_t>>();
+  }
+
+  auto new_access_data = get_access_data();
+  auto current_access_data = calculate_access_data_difference(new_access_data, last_access_data);
+  last_access_data = new_access_data;
+
+  // return current_access_data;
+  return new_access_data;
+}
+
 std::map<std::string, std::string> get_most_accessed_columns(std::map<std::string, std::map<std::string, int64_t>> access_data){
   std::map<std::string, std::string> most_accessed{};
 
@@ -59,26 +104,64 @@ std::map<std::string, std::string> get_most_accessed_columns(std::map<std::strin
     auto table_name = it->first;
     std::string max_column_name = "";
     int64_t max_access_count = 0;
+    int64_t first_accesses = 0;
+
 
     bool first = true;
     for (auto it2=it->second.begin(); it2!=it->second.end(); ++it2){
-      if (first){
-        first = false;
-        max_column_name = it2->first;
-        max_access_count = it2->second;
-        continue;
-      }
       auto column_name = it2->first;
       auto n_accesses = it2->second;
+
+      if (first){
+        first = false;
+        max_column_name = column_name;
+        max_access_count = n_accesses;
+        first_accesses = n_accesses;
+        continue;
+      }
+
       if (n_accesses > max_access_count){
         max_access_count = n_accesses;
         max_column_name = column_name;
       }
     }
-    most_accessed.insert({table_name, max_column_name});
+    if (max_access_count > 0 && max_access_count != first_accesses) {
+      most_accessed.insert({table_name, max_column_name});
+    }
   }
 
   return most_accessed;
+}
+
+void print_access_data(std::map<std::string, std::map<std::string, int64_t>> access_data){
+  for (auto it=access_data.begin(); it!=access_data.end(); ++it){
+    std::cout << it->first << " :\n";
+    for (auto it2=it->second.begin(); it2!=it->second.end(); ++it2){
+        std::cout << "    " << it2->first << " : " << it2->second << "\n";
+    }
+  }
+}
+
+void print_sort_orders(std::map<std::string, std::string> access_data){
+  for (auto it=access_data.begin(); it!=access_data.end(); ++it){
+    std::cout << it->first << " : " << it->second << "\n";
+  }
+}
+
+bool check_if_already_sorted(std::string table_name, std::string column_name){
+  auto table = Hyrise::get().storage_manager.get_table(table_name);
+  auto column_id = table->column_id_by_name(column_name);
+  const auto chunk_count = table->chunk_count();
+
+  for (auto chunk_id = ChunkID{0}; chunk_id < chunk_count; ++chunk_id) {
+    const auto chunk = table->get_chunk(chunk_id);
+    auto order_information = chunk->ordered_by();
+    auto chunk_column_id = order_information->first;
+    if (chunk_column_id != column_id){
+      return false;
+    }
+  }
+  return true;
 }
 
 const std::string ReactiveClusteringPlugin::description() const { return "ReactiveClusteringPlugin"; }
@@ -89,22 +172,48 @@ void ReactiveClusteringPlugin::start() {
 }
 
 void ReactiveClusteringPlugin::_optimize_clustering() {
-  if (_optimized) return;
+  // if (_optimized) return;
+  //
+  // _optimized = true;
 
-  _optimized = true;
+  //___________________________________
 
-  auto access_data = get_access_data();
+
+
+  auto access_data = get_current_access_data();
+  // print_access_data(access_data);
+  std::cout << "__________________\n";
+  if (access_data.empty()){
+    std::cout<< "Empty access data\n";
+    return;
+  }
+  std::cout << "__\n";
+
   // std::map<std::string, std::string> sort_orders = {{"orders_tpch_0_1", "o_orderdate"}, {"orders_tpch_1", "o_orderdate"}, {"lineitem_tpch_0_1", "l_shipdate"}, {"lineitem_tpch_1", "l_shipdate"}};
   std::map<std::string, std::string> sort_orders = get_most_accessed_columns(access_data);
+  // print_sort_orders(sort_orders);
+  if (sort_orders.empty()){
+    std::cout<< "Empty sort orders\n";
+    return;
+  }
+
+  //___________________________________
+
 
   for (auto& [table_name, column_name] : sort_orders) {
-    std::cout << "Working with table: " << table_name << " column: " << column_name << '\n';
+    std::cout << "Working with: " << table_name << " : " << column_name << '\n';
     if (!Hyrise::get().storage_manager.has_table(table_name)) {
       Hyrise::get().log_manager.add_message(description(), "No optimization possible with given parameters for " + table_name + " table!", LogLevel::Debug);
       continue;
     }
-    auto table = Hyrise::get().storage_manager.get_table(table_name);
 
+    if(check_if_already_sorted(table_name, column_name)){
+      std::cout << "    OK " << table_name << " already sorted by " << column_name << '\n';
+      continue;
+    }
+    std::cout << "    UPS Sorting " << table_name << " by " << column_name << "...\n";
+
+    auto table = Hyrise::get().storage_manager.get_table(table_name);
     const auto sort_column_id = table->column_id_by_name(column_name);
 
     auto table_wrapper = std::make_shared<TableWrapper>(table);
