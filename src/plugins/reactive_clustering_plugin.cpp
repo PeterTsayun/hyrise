@@ -68,7 +68,7 @@ std::map<std::string, std::map<std::string, int64_t>> calculate_access_data_diff
           auto column_name = column_iterator->first;
 
           auto it_2 = subtractor[table_name].find(column_name);
-          if (it_2 != subtractor[table_name].end()){
+          if (it_2 != subtractor[table_name].end() && base[table_name][column_name] >= subtractor[table_name][column_name]){
             res[table_name][column_name] = base[table_name][column_name] - subtractor[table_name][column_name];
           }else{
             res[table_name][column_name] = base[table_name][column_name];
@@ -93,12 +93,12 @@ std::map<std::string, std::map<std::string, int64_t>> get_current_access_data(){
   auto current_access_data = calculate_access_data_difference(new_access_data, last_access_data);
   last_access_data = new_access_data;
 
-  // return current_access_data;
-  return new_access_data;
+  return current_access_data;
 }
 
 std::map<std::string, std::string> get_most_accessed_columns(std::map<std::string, std::map<std::string, int64_t>> access_data){
-  std::map<std::string, std::string> most_accessed{};
+  static std::map<std::string, std::string> last_most_accessed;
+  std::map<std::string, std::string> most_accessed;
 
   for (auto it=access_data.begin(); it!=access_data.end(); ++it){
     auto table_name = it->first;
@@ -127,10 +127,36 @@ std::map<std::string, std::string> get_most_accessed_columns(std::map<std::strin
     }
     if (max_access_count > 0 && max_access_count != first_accesses) {
       most_accessed.insert({table_name, max_column_name});
+    } else {
+      std::cout<<"[WARNING] table: " << table_name << " max_count: " << max_access_count << " first_accesses: " << first_accesses << '\n';
     }
   }
 
-  return most_accessed;
+  if (last_most_accessed.empty()){
+    last_most_accessed = most_accessed;
+    return std::map<std::string, std::string>();
+  }
+
+  std::map<std::string, std::string> res;
+
+  for(auto it=most_accessed.begin(); it!=most_accessed.end(); ++it){
+    auto table_name = it->first;
+    auto column_name = it->second;
+
+    auto it_2 = last_most_accessed.find(table_name);
+    if (it_2 != last_most_accessed.end()){
+        if (last_most_accessed[table_name] == most_accessed[table_name]){
+          res[table_name] = column_name;
+        } else {
+          std::cout<<"[WARNING] unstable table: " << table_name << "(" << last_most_accessed[table_name] << " -> " << most_accessed[table_name] << ")\n";
+        }
+    } else {
+      std::cout<<"[WARNING] table was not present: " << table_name << "\n";
+    }
+  }
+  last_most_accessed = most_accessed;
+
+  return res;
 }
 
 void print_access_data(std::map<std::string, std::map<std::string, int64_t>> access_data){
@@ -167,7 +193,9 @@ bool check_if_already_sorted(std::string table_name, std::string column_name){
 const std::string ReactiveClusteringPlugin::description() const { return "ReactiveClusteringPlugin"; }
 
 void ReactiveClusteringPlugin::start() {
+  std::cout<<"ReactiveClustering: Init!\n";
   Hyrise::get().log_manager.add_message(description(), "Initialized!", LogLevel::Info);
+  get_current_access_data();
   _loop_thread = std::make_unique<PausableLoopThread>(THREAD_INTERVAL, [&](size_t) { _optimize_clustering(); });
 }
 
@@ -182,12 +210,11 @@ void ReactiveClusteringPlugin::_optimize_clustering() {
 
   auto access_data = get_current_access_data();
   // print_access_data(access_data);
-  std::cout << "__________________\n";
+  std::cout << "_______________________\n";
   if (access_data.empty()){
     std::cout<< "Empty access data\n";
     return;
   }
-  std::cout << "__\n";
 
   // std::map<std::string, std::string> sort_orders = {{"orders_tpch_0_1", "o_orderdate"}, {"orders_tpch_1", "o_orderdate"}, {"lineitem_tpch_0_1", "l_shipdate"}, {"lineitem_tpch_1", "l_shipdate"}};
   std::map<std::string, std::string> sort_orders = get_most_accessed_columns(access_data);
